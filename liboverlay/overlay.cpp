@@ -34,7 +34,6 @@
 #define CONFIG_VIDEO_EMXX_FILTER
 #include <linux/videodev2.h>
 #include <linux/fbcommon.h>
-#include <linux/emxx_mem.h>
 #include <linux/fb.h>
 
 #define V4L_MAX_BUF	3
@@ -44,8 +43,6 @@
 /* This will be modified based on the actual length. 
  * FIXME
  */
-#define OVERLAY_BUFFER_SIZE EMXX_OVERLAY_SIZE
-#define OVERLAY_BUFFER_ADDR EMXX_OVERLAY_BASE
 
 /*****************************************************************************/
 
@@ -69,6 +66,8 @@ struct overlay_control_context_t {
 	int y;
 	int dst_w;
 	int dst_h;
+
+	struct emxx_overlay_area area;
 };
 
 struct overlay_data_context_t {
@@ -132,6 +131,7 @@ struct handle_t : public native_handle {
 	int format;
 	int buf_num;
 	int buf_size;
+	unsigned long buf_addr;
 };
 
 class overlay_object : public overlay_t {
@@ -146,11 +146,11 @@ class overlay_object : public overlay_t {
 
 public:
 	overlay_object(int fd, int shared_fd, int w, int h,
-			int format, int buf_num, int buf_size) {
+			int format, int buf_num, int buf_size, unsigned long buf_addr) {
 		this->overlay_t::getHandleRef = getHandleRef;
 		mHandle.version = sizeof(native_handle);
 		mHandle.numFds    = 2;
-		mHandle.numInts   = 5; // extra ints we have in  our handle
+		mHandle.numInts   = 6; // extra ints we have in  our handle
 		mHandle.ctl_fd = fd;
 		mHandle.shared_fd = shared_fd;
 		mHandle.width = w;
@@ -158,6 +158,7 @@ public:
 		mHandle.format = format;
 		mHandle.buf_num = buf_num;
 		mHandle.buf_size = buf_size;
+		mHandle.buf_addr = buf_addr;
 		this->w = w;
 		this->h = h;
 		this->format = format;
@@ -199,6 +200,11 @@ static int handle_buf_num(const overlay_handle_t overlay)
 static int handle_buf_size(const overlay_handle_t overlay)
 {
 	return static_cast<const struct handle_t *>(overlay)->buf_size;
+}
+
+static int handle_buf_addr(const overlay_handle_t overlay)
+{
+	return static_cast<const struct handle_t *>(overlay)->buf_addr;
 }
 
 // ****************************************************************************
@@ -299,6 +305,11 @@ static int v4l2_set_fb(struct overlay_control_context_t* cctx, int colorkey)
 
 	if (ioctl(fb, FBIOGET_VSCREENINFO, &info) == -1){
 		LOGE("FBIOGET_VSCREENINFO error: %s", strerror(errno));
+		return -1;
+	}
+
+	if (ioctl(fb, EMXX_GET_OVERLAY_AREA, &cctx->area) != 0) {
+		LOGE("EMXX_GET_OVERLAY_AREA error: %s", strerror(errno));
 		return -1;
 	}
 
@@ -607,6 +618,7 @@ static overlay_t* overlay_createOverlay(struct overlay_control_device_t *dev,
 		size = (tmp_w * tmp_h * 3) / 2;
 		break;
 	case OVERLAY_FORMAT_YCbCr_420_P:
+	case OVERLAY_FORMAT_DEFAULT:
 		format = V4L2_PIX_FMT_YUV420;
 		size = (tmp_w * tmp_h * 3) / 2;
 		break;
@@ -627,7 +639,9 @@ static overlay_t* overlay_createOverlay(struct overlay_control_device_t *dev,
 		goto error;
 	}
 
-	buf_num = OVERLAY_BUFFER_SIZE / size;
+	v4l2_set_fb(cctx, OVERLAY_KEY_COLOR);
+
+	buf_num = cctx->area.size / size;
 	if (buf_num > V4L_MAX_BUF) {
 		buf_num = V4L_MAX_BUF;
 	} else if (buf_num == 0){
@@ -637,8 +651,6 @@ static overlay_t* overlay_createOverlay(struct overlay_control_device_t *dev,
 	v4l2_set_source(fd, w, h, format);
 	v4l2_set_rotation(fd, 0);
 	v4l2_req_buf(fd, V4L_MAX_BUF);
-
-	v4l2_set_fb(cctx, OVERLAY_KEY_COLOR);
 
 	if (cctx->dispW == FRONT_WIDTH_1080I && cctx->dispH == FRONT_HEIGHT_1080I) {
 		v4l2_set_output(fd, V4L2_OUTPUT_HDMI_1080I);
@@ -653,7 +665,7 @@ static overlay_t* overlay_createOverlay(struct overlay_control_device_t *dev,
 	cctx->height = h;
 	cctx->format = format;
 
-	overlay = new overlay_object(fd, shared_fd, w, h, format, buf_num, size);
+	overlay = new overlay_object(fd, shared_fd, w, h, format, buf_num, size, cctx->area.addr);
 	if (overlay == NULL) {
 		LOGE("Failed to create overlay object\n");
 		goto error1;
@@ -807,6 +819,7 @@ int overlay_initialize(struct overlay_data_device_t *dev,
 	dctx->format  = handle_format(handle);
 	dctx->buf_num = handle_buf_num(handle);
 	dctx->size      = handle_buf_size(handle);
+	dctx->paddr[0]  = handle_buf_addr(handle);
 
 	size = dctx->size;
 
@@ -832,11 +845,11 @@ int overlay_initialize(struct overlay_data_device_t *dev,
 
 	dctx->map_size = size * dctx->buf_num;
 
-	//Don't use physical address anymore
-	dctx->paddr[0] = OVERLAY_BUFFER_ADDR;
+	LOGD("[overlay]overlay buffer area address 0x%08lx, size 0x%08x",
+		dctx->paddr[0], dctx->map_size);
 
 	/* FIXME, need to change according to the real mmap method */
-	dctx->vaddr[0] = mmap(0, dctx->map_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, OVERLAY_BUFFER_ADDR);
+	dctx->vaddr[0] = mmap(0, dctx->map_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, dctx->paddr[0]);
 	if((int)dctx->vaddr[0] == -1 ){
 		LOGE("[overlay]overlay initialize failed:%s", strerror(errno));
 		close(fd);

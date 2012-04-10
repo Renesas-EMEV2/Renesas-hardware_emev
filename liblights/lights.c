@@ -19,18 +19,19 @@
 static int light_set(struct light_device_t* dev,
 		struct light_state_t const* state)
 {
+	int fd;
 	int color = state->color & 0x00ffffff;
 	color = ((77*((color>>16)&0x00ff)) + (150*((color>>8)&0x00ff)) + (29*(color&0x00ff))) >> 8;
 
 	fd = open( "/sys/class/leds/lcd-backlight/brightness", O_RDWR);
 	if (fd >= 0) {
 		char buffer[20];
-		int bytes = sprintf(buffer, "%d\n", value);
+		int bytes = sprintf(buffer, "%d\n", color);
 		int amt = write(fd, buffer, bytes);
 		close(fd);
 		return amt == -1 ? -errno : 0;
 	}
-	LOGE("write_int failed to open %s\n", path);
+	//LOGE("write_int failed to open %s\n", path);
 	return -errno;
 }
 
@@ -44,7 +45,7 @@ static int lights_open(const struct hw_module_t* module, char const* name, struc
 		dev->common.tag = HARDWARE_DEVICE_TAG;
 		dev->common.version = 0;
 		dev->common.module = (struct hw_module_t*)module;
-		dev->common.close = (int (*)(struct hw_device_t*))close_lights;
+		//dev->common.close = (int (*)(struct hw_device_t*))close_lights;
 		dev->set_light = light_set;
 
 		*device = (struct hw_device_t*)dev;
