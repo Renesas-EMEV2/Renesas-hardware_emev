@@ -13,4 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-include $(all-subdir-makefiles)
+ifeq ($(TARGET_BOARD_PLATFORM),emxx)
+  include $(all-subdir-makefiles)
+endif
+
